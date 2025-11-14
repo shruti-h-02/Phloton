@@ -1,0 +1,17 @@
+#define HOTFAN_PIN 7
+void setup() 
+{
+  Serial.begin(115200);
+}
+
+void loop() 
+{ 
+  pinMode(HOTFAN_PIN, OUTPUT);
+  digitalWrite(HOTFAN_PIN, HIGH);       
+  Serial.println("Fan ON");
+  delay(1000);
+             
+  digitalWrite(HOTFAN_PIN, LOW);       
+  Serial.println("Fan OFF");
+  delay(1000);                   
+}
