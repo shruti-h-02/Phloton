@@ -1,0 +1,38 @@
+#include <Adafruit_NeoPixel.h>
+
+#define LED_PIN 16
+#define BUTTON_PIN 10
+#define NUM_LEDS 1
+
+Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+int ledState = 0;           
+int lastButtonState = 1;     
+
+void setup() 
+{
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  led.begin();
+  led.show();
+}
+
+void loop()
+ {
+  int currentButton = digitalRead(BUTTON_PIN);
+  if (lastButtonState == 1 && currentButton == 0) 
+  {
+    if (ledState == 0) 
+    {
+      ledState = 1;
+      led.setPixelColor(0, led.Color(255, 0, 0)); 
+    } else {
+      ledState = 0;
+      led.setPixelColor(0, led.Color(0, 0, 0));   
+    }
+
+    led.show();
+    delay(20); 
+  }
+
+  lastButtonState = currentButton;
+ }
