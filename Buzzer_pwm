@@ -1,0 +1,20 @@
+#define BUZZER_PIN 5
+void setup() {
+  pinMode(BUZZER_PIN, OUTPUT);
+}
+
+void loop()
+ {
+  // Gradually increase buzzer volume
+  for (int volume = 0; volume <= 255; volume++) {
+    analogWrite(BUZZER_PIN, volume);  // Volume 0–255
+    delay(5);
+  }
+
+  // Gradually decrease buzzer volume
+  for (int volume = 255; volume >= 0; volume--) {
+    analogWrite(BUZZER_PIN, volume);
+    delay(5);
+  }
+  delay(500);
+}
