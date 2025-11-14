@@ -1,0 +1,54 @@
+#include <math.h>
+#define AMBIENT_PIN 8
+#define COLDSINK_PIN 3 
+#define HEATSINK_PIN  9
+#define FLASKTOP_PIN  11
+
+
+#define VREF     2.5       
+#define ADC_MAX  4095.0     
+#define R_FIXED  10000.0    
+#define BETA     3977     
+#define R0       10000.0    
+#define T0       298.15     
+
+
+float readVoltage(int pin) {
+  int raw = analogRead(pin);
+  return raw * (VREF / ADC_MAX);
+}
+
+float voltageToResistance(float vout) {
+  if (vout <= 0.0 || vout >= VREF) return NAN;
+  return R_FIXED * (vout / (VREF - vout));
+}
+
+float resistanceToTempC(float r) {
+  float invT = (1.0 / T0) + (1.0 / BETA) * log(r / R0);
+  return (1.0 / invT) - 273.15;
+}
+
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+  delay(500);
+  Serial.println("\n--- Real-Time Temperature Readings ---");
+  Serial.println("Ambient | Cold Sink | Heat Sink | Flask Top (°C)");
+}
+
+void loop()
+ {
+  float vA = readVoltage(AMBIENT_PIN);
+  float vC = readVoltage(COLDSINK_PIN);
+  float vH = readVoltage(HEATSINK_PIN);
+  float vF = readVoltage(FLASKTOP_PIN);
+
+  float tA = resistanceToTempC(voltageToResistance(vA));
+  float tC = resistanceToTempC(voltageToResistance(vC));
+  float tH = resistanceToTempC(voltageToResistance(vH));
+  float tF = resistanceToTempC(voltageToResistance(vF));
+
+  Serial.printf("%.2f°C | %.2f°C | %.2f°C | %.2f°C\n", tA, tC, tH, tF);
+
+  delay(1000); 
+}
