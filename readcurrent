@@ -1,0 +1,47 @@
+#define CSFAN_PIN 21   
+#define HSFAN_PIN 7  
+#define CSFAN_CURR_PIN 14        
+#define HSFAN_CURR_PIN 15         
+#define SHUNT_RESISTOR 0.3    
+#define GAIN 100.0              
+#define VREF 3.3                
+#define ADC_MAX 4095   
+
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+}
+
+void loop() {
+   pinMode(CSFAN_PIN, OUTPUT);
+   pinMode(HSFAN_PIN, OUTPUT);
+  
+  for (int speed = 0; speed <= 255; speed++) 
+  {
+    analogWrite(CSFAN_PIN, speed);  
+    analogWrite(HSFAN_PIN, speed);   
+
+    
+  // Read Cold Fan Current
+  int adcCold = analogRead(CSFAN_CURR_PIN);
+  float voutCold = (adcCold * VREF) / ADC_MAX;
+  float currentCold = voutCold / (GAIN * SHUNT_RESISTOR);
+
+    // Read Hot Fan Current
+  int adcHot = analogRead(HSFAN_CURR_PIN);
+  float voutHot = (adcHot * VREF) / ADC_MAX;
+  float currentHot = voutHot / (GAIN * SHUNT_RESISTOR);
+    
+    Serial.print("Fan Speed (PWM): ");
+    Serial.println(speed);
+    delay(100);
+
+  Serial.print("Current CSFAN: ");
+  Serial.print(currentCold , 3);
+  Serial.println("A");
+
+  Serial.print("Current HSFAN: ");
+  Serial.print(currentHot , 3);
+  Serial.println("A");
+  } 
+}
