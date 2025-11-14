@@ -1,0 +1,27 @@
+#define VOLTAGE_PIN 4     
+#define DIVIDER_RATIO 11
+#define VREF 3.3           
+#define ADC_MAX 4095       
+
+float readBatteryVoltage() 
+{
+  
+    int adcValue = analogRead(VOLTAGE_PIN);
+    
+    float measuredVoltage = ((float)adcValue / ADC_MAX) * VREF;
+    
+    float inputVoltage = measuredVoltage * DIVIDER_RATIO;
+    
+    return inputVoltage;
+}
+
+void setup() {
+    Serial.begin(115200);
+    analogReadResolution(12); 
+}
+
+void loop() {
+    float battery_voltage = readBatteryVoltage();
+    Serial.printf("Battery Voltage: %.2f V\n", battery_voltage);
+    delay(1000); 
+}
