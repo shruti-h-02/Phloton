@@ -1,0 +1,251 @@
+#include <Adafruit_NeoPixel.h>
+
+#define LED_PIN 16
+#define BUTTON_PIN 10           // ISR supported
+#define NUM_LEDS 1
+#define LED1_PIN 48
+#define LID_OPEN_DETECT 46      // ISR NOT supported on ESP32-S3
+#define HOTFAN_PIN 7
+#define CSFAN_PIN 21
+
+#define CSFAN_CURR_PIN 14
+#define HSFAN_CURR_PIN 15
+
+#define VOLTAGE_PIN 4
+#define DIVIDER_RATIO 11
+
+#define AMBIENT_PIN 8
+#define COLDSINK_PIN 3
+#define HEATSINK_PIN 9
+#define FLASKTOP_PIN 11
+
+#define SR_SER   13
+#define SR_SRCLK 44
+#define SR_RCLK  43
+
+#define VREF 3.3
+#define ADC_MAX 4095
+#define R_FIXED 10000
+#define BETA 4250
+#define R0 10000
+#define T0 298.15
+#define GAIN 100.0
+
+#define CSSHUNT_RESISTOR 0.3
+#define HSSHUNT_RESISTOR 0.05
+
+Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+volatile bool buttonPressed = false;
+
+int ledState = 0;
+int lastLidState = HIGH;
+int lastButtonState = HIGH;
+
+unsigned long prevNeoMillis = 0;
+unsigned long prevShiftMillis = 0;
+const int neoInterval = 300;
+const int shiftInterval = 200;
+
+int neoColorIndex = 0;
+bool neoOnPhase = true;
+
+int colors[6][3] = {
+  {255, 0, 0},
+  {0, 255, 0},
+  {0, 0, 255},
+  {255, 255, 0},
+  {0, 255, 255},
+  {255, 0, 255}
+};
+
+int shiftPhase = 0;
+int shiftIndex = 0;
+
+// ---------------- ISR -----------------
+void IRAM_ATTR buttonISR() {
+  buttonPressed = true;
+}
+
+// ---------------- SENSOR FUNCTIONS ----------------
+float readVoltage(int pin) {
+  int val = analogRead(pin);
+  return (val * VREF) / ADC_MAX;
+}
+
+float voltageToResistance(float voltage) {
+  if (voltage <= 0) return NAN;
+  return R_FIXED * (2.5 / voltage - 1.0);
+}
+
+float resistanceToTempC(float resistance) {
+  float tempK = 1.0 / ((log(resistance / R0) / BETA) + (1.0 / T0));
+  return tempK - 273.15;
+}
+
+// ---------------- SETUP ----------------
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(BUTTON_PIN, buttonISR, FALLING);
+
+  pinMode(LID_OPEN_DETECT, INPUT_PULLUP);
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(HOTFAN_PIN, OUTPUT);
+  pinMode(CSFAN_PIN, OUTPUT);
+
+  pinMode(SR_SER, OUTPUT);
+  pinMode(SR_SRCLK, OUTPUT);
+  pinMode(SR_RCLK, OUTPUT);
+
+  led.begin();
+  led.show();
+}
+
+// ---------------- LOOP ----------------
+void loop() {
+
+  // ------------ BUTTON HANDLING (ISR DRIVEN) ------------
+  if (buttonPressed) {
+    buttonPressed = false;
+    ledState = !ledState;
+  }
+
+  // ------------ LID POLLING (NO ISR AVAILABLE) ------------
+  int currentLidState = digitalRead(LID_OPEN_DETECT);
+
+  if (currentLidState != lastLidState) {
+    if (currentLidState == HIGH) {
+      Serial.println("LID OPEN");
+
+      digitalWrite(HOTFAN_PIN, LOW);
+      digitalWrite(CSFAN_PIN, LOW);
+      digitalWrite(LED1_PIN, LOW);
+
+      led.clear();
+      led.show();
+      writeShift(0);
+    } else {
+      Serial.println("LID CLOSED");
+    }
+  }
+
+  lastLidState = currentLidState;
+
+  // ------------ FAN CONTROL ------------
+  if (ledState == 1 && currentLidState == LOW) {
+    digitalWrite(HOTFAN_PIN, HIGH);
+    digitalWrite(CSFAN_PIN, HIGH);
+    digitalWrite(LED1_PIN, HIGH);
+  } else {
+    digitalWrite(HOTFAN_PIN, LOW);
+    digitalWrite(CSFAN_PIN, LOW);
+    digitalWrite(LED1_PIN, LOW);
+  }
+
+  // ------------ RUN ANIMATIONS ------------
+  if (ledState == 1 && currentLidState == LOW) {
+    runMulticolor();
+    runShiftPattern();
+  } else {
+    allOff();
+  }
+
+  // ------------ SENSOR READING EVERY 1 SEC ------------
+  static unsigned long prevMillis = 0;
+  unsigned long now = millis();
+
+  if (now - prevMillis >= 1000) {
+    prevMillis = now;
+
+    float tA = resistanceToTempC(voltageToResistance(readVoltage(AMBIENT_PIN)));
+    float tC = resistanceToTempC(voltageToResistance(readVoltage(COLDSINK_PIN)));
+    float tH = resistanceToTempC(voltageToResistance(readVoltage(HEATSINK_PIN)));
+    float tF = resistanceToTempC(voltageToResistance(readVoltage(FLASKTOP_PIN)));
+
+    int adcCold = analogRead(CSFAN_CURR_PIN);
+    float currentCold = ((adcCold * VREF) / ADC_MAX) / (GAIN * CSSHUNT_RESISTOR);
+
+    int adcHot = analogRead(HSFAN_CURR_PIN);
+    float currentHot = ((adcHot * VREF) / ADC_MAX) / (GAIN * HSSHUNT_RESISTOR);
+
+    int adcValue = analogRead(VOLTAGE_PIN);
+    float inputVoltage = (((float)adcValue / ADC_MAX) * VREF) * DIVIDER_RATIO;
+
+    Serial.printf("Ambient: %.2f°C\n", tA);
+    Serial.printf("Cold Sink: %.2f°C\n", tC);
+    Serial.printf("Heat Sink: %.2f°C\n", tH);
+    Serial.printf("Flask Top: %.2f°C\n", tF);
+
+    Serial.printf("Current CSFAN: %.3f A\n", currentCold);
+    Serial.printf("Current HSFAN: %.3f A\n", currentHot);
+    Serial.printf("Voltage: %.2f V\n", inputVoltage);
+  }
+}
+
+// ---------------- MULTICOLOR LED ----------------
+void runMulticolor() {
+  unsigned long now = millis();
+  if (now - prevNeoMillis < neoInterval) return;
+  prevNeoMillis = now;
+
+  if (neoOnPhase) {
+    int r = colors[neoColorIndex][0];
+    int g = colors[neoColorIndex][1];
+    int b = colors[neoColorIndex][2];
+    led.setPixelColor(0, led.Color(r, g, b));
+  } else {
+    led.clear();
+    neoColorIndex++;
+    if (neoColorIndex >= 6) neoColorIndex = 0;
+  }
+
+  led.show();
+  neoOnPhase = !neoOnPhase;
+}
+
+// ---------------- SHIFT REGISTER PATTERN ----------------
+void runShiftPattern() {
+  unsigned long now = millis();
+  if (now - prevShiftMillis < shiftInterval) return;
+  prevShiftMillis = now;
+
+  if (shiftPhase == 0) {
+    writeShift(shiftIndex + 1);
+    shiftIndex++;
+    if (shiftIndex >= 8) shiftPhase = 1;
+  }
+  else if (shiftPhase == 1) {
+    writeShift(8);
+    shiftPhase = 2;
+  }
+  else if (shiftPhase == 2) {
+    writeShift(shiftIndex - 1);
+    shiftIndex--;
+    if (shiftIndex <= 0) shiftPhase = 0;
+  }
+}
+
+void writeShift(int count) {
+  byte value = 0;
+  for (int i = 0; i < count; i++) value |= (1 << i);
+
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, value);
+  latchUpdate();
+}
+
+void latchUpdate() {
+  digitalWrite(SR_RCLK, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(SR_RCLK, LOW);
+}
+
+void allOff() {
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, 0x00);
+  latchUpdate();
+
+  led.clear();
+  led.show();
+}
