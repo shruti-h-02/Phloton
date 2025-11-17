@@ -19,14 +19,14 @@
 #define HEATSINK_PIN 9
 #define FLASKTOP_PIN 11
 
-#define SR_SER 13
+#define SR_SER   13
 #define SR_SRCLK 44
-#define SR_RCLK 43
+#define SR_RCLK  43
 
 #define VREF 3.3
 #define ADC_MAX 4095
 #define R_FIXED 10000
-#define BETA 3977
+#define BETA 4250
 #define R0 10000
 #define T0 298.15
 #define GAIN 100.0
@@ -39,9 +39,27 @@ Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 int ledState = 0;
 int lastButtonState = HIGH;
 int lastLidState = HIGH;
-///////////////////////////////////
-int adcValue;
-float inputVoltage;
+
+unsigned long prevNeoMillis = 0;
+unsigned long prevShiftMillis = 0;
+const int neoInterval = 300;
+const int shiftInterval = 200;
+
+int neoColorIndex = 0;
+bool neoOnPhase = true;
+
+int colors[6][3] = {
+  {255, 0, 0},
+  {0, 255, 0},
+  {0, 0, 255},
+  {255, 255, 0},
+  {0, 255, 255},
+  {255, 0, 255}
+};
+
+int shiftPhase = 0;
+int shiftIndex = 0;
+
 
 float readVoltage(int pin) {
   int val = analogRead(pin);
@@ -49,8 +67,7 @@ float readVoltage(int pin) {
 }
 
 float voltageToResistance(float voltage) {
-  if (voltage <= 0)
-    return NAN;
+  if (voltage <= 0) return NAN;
   return R_FIXED * (2.5 / voltage - 1.0);
 }
 
@@ -58,7 +75,7 @@ float resistanceToTempC(float resistance) {
   float tempK = 1.0 / ((log(resistance / R0) / BETA) + (1.0 / T0));
   return tempK - 273.15;
 }
-////////////////////////
+
 void setup() {
   Serial.begin(115200);
   analogReadResolution(12);
@@ -69,108 +86,155 @@ void setup() {
   pinMode(HOTFAN_PIN, OUTPUT);
   pinMode(CSFAN_PIN, OUTPUT);
 
+  pinMode(SR_SER, OUTPUT);
+  pinMode(SR_SRCLK, OUTPUT);
+  pinMode(SR_RCLK, OUTPUT);
+
   led.begin();
   led.show();
 }
 
 void loop() {
-  while (1) {
-    int currentButton = digitalRead(BUTTON_PIN);
-    int currentLidState = digitalRead(LID_OPEN_DETECT);
 
-    if (currentLidState != lastLidState)
-     {
-      if (currentLidState == LOW) {
-        Serial.println("LID CLOSED");
-        if (ledState == 1) 
-        {
-          led.setPixelColor(0, led.Color(255, 0, 0));
-          digitalWrite(LED1_PIN, HIGH);
-          digitalWrite(HOTFAN_PIN, HIGH);
-          digitalWrite(CSFAN_PIN, HIGH);
-        } else {
-          led.setPixelColor(0, led.Color(0, 0, 0));
-          digitalWrite(LED1_PIN, LOW);
-        }
-        led.show();
-      } else 
-      {
-        Serial.println("LID OPEN");
-        led.setPixelColor(0, led.Color(0, 0, 0));  // off immediately
-        digitalWrite(LED1_PIN, LOW);
-        digitalWrite(HOTFAN_PIN, LOW);
-        digitalWrite(CSFAN_PIN, LOW);
-        led.show();
-      }
-      lastLidState = currentLidState;
-    }
-    if (lastButtonState == HIGH && currentButton == LOW) {
-      ledState = !ledState;
+  int currentButton = digitalRead(BUTTON_PIN);
+  int currentLidState = digitalRead(LID_OPEN_DETECT);
 
-      if (ledState == 1) 
-      {
-        led.setPixelColor(0, led.Color(255, 0, 0));
-        digitalWrite(LED1_PIN, HIGH);
-        digitalWrite(HOTFAN_PIN, HIGH);
-        digitalWrite(CSFAN_PIN, HIGH);
-      } else 
-      {
-        led.setPixelColor(0, led.Color(0, 0, 0));
-        digitalWrite(LED1_PIN, LOW);
-        digitalWrite(HOTFAN_PIN, LOW);
-        digitalWrite(CSFAN_PIN, LOW);
-      }
-      led.show();
-    }
-    lastButtonState = currentButton;
-    ///////////////////////////////////////////////////
-    const long interval = 1000;
-    static unsigned long previousMillis = 0;
+  if (currentLidState != lastLidState) {
 
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= interval) 
+    if (currentLidState == LOW) 
     {
-      previousMillis = currentMillis;
-    /////////////////////////////////////////
-    float vA = readVoltage(AMBIENT_PIN);
-    float vC = readVoltage(COLDSINK_PIN);
-    float vH = readVoltage(HEATSINK_PIN);
-    float vF = readVoltage(FLASKTOP_PIN);
+      Serial.println("LID CLOSED");
+    } else 
+    { 
+      Serial.println("LID OPEN");
 
-    float tA = resistanceToTempC(voltageToResistance(vA));
-    float tC = resistanceToTempC(voltageToResistance(vC));
-    float tH = resistanceToTempC(voltageToResistance(vH));
-    float tF = resistanceToTempC(voltageToResistance(vF));
+      digitalWrite(LED1_PIN, LOW);
+      digitalWrite(HOTFAN_PIN, LOW);
+      digitalWrite(CSFAN_PIN, LOW);
+
+      led.clear();
+      led.show();
+      writeShift(0);
+    }
+
+    lastLidState = currentLidState;
+  }
+
+  if (lastButtonState == HIGH && currentButton == LOW) {
+    ledState = !ledState;
+  }
+  lastButtonState = currentButton;
+
+  if (currentLidState == LOW && ledState == 1) {
+    digitalWrite(HOTFAN_PIN, HIGH);
+    digitalWrite(CSFAN_PIN, HIGH);
+    digitalWrite(LED1_PIN, HIGH);
+  } else {
+    digitalWrite(HOTFAN_PIN, LOW);
+    digitalWrite(CSFAN_PIN, LOW);
+    digitalWrite(LED1_PIN, LOW);
+  }
+
+  if (ledState == 1 && currentLidState == LOW) {
+    runMulticolor();
+    runShiftPattern();
+  } else {
+    allOff();
+  }
+
+  static unsigned long prevMillis = 0;
+  unsigned long now = millis();
+
+  if (now - prevMillis >= 1000) {
+    prevMillis = now;
+
+    float tA = resistanceToTempC(voltageToResistance(readVoltage(AMBIENT_PIN)));
+    float tC = resistanceToTempC(voltageToResistance(readVoltage(COLDSINK_PIN)));
+    float tH = resistanceToTempC(voltageToResistance(readVoltage(HEATSINK_PIN)));
+    float tF = resistanceToTempC(voltageToResistance(readVoltage(FLASKTOP_PIN)));
 
     int adcCold = analogRead(CSFAN_CURR_PIN);
-    delayMicroseconds(10);
-    float voutCold = (adcCold * VREF) / ADC_MAX;
-    float currentCold = voutCold / (GAIN * CSSHUNT_RESISTOR);
+    float currentCold = ((adcCold * VREF) / ADC_MAX) / (GAIN * CSSHUNT_RESISTOR);
 
     int adcHot = analogRead(HSFAN_CURR_PIN);
-    delayMicroseconds(10);
-    float voutHot = (adcHot * VREF) / ADC_MAX;
-    float currentHot = voutHot / (GAIN * HSSHUNT_RESISTOR);
+    float currentHot = ((adcHot * VREF) / ADC_MAX) / (GAIN * HSSHUNT_RESISTOR);
 
-    adcValue = analogRead(VOLTAGE_PIN);
-    inputVoltage = (((float)adcValue / ADC_MAX) * VREF) * DIVIDER_RATIO;
+    int adcValue = analogRead(VOLTAGE_PIN);
+    float inputVoltage = (((float)adcValue / ADC_MAX) * VREF) * DIVIDER_RATIO;
 
-    Serial.printf("Ambient: %.2f °C\n", tA);
-    Serial.printf("Cold Sink: %.2f °C\n", tC);
-    Serial.printf("Heat Sink: %.2f °C\n", tH);
-    Serial.printf("Flask Top: %.2f °C\n", tF);
+    Serial.printf("Ambient: %.2f°C\n", tA);
+    Serial.printf("Cold Sink: %.2f°C\n", tC);
+    Serial.printf("Heat Sink: %.2f°C\n", tH);
+    Serial.printf("Flask Top: %.2f°C\n", tF);
 
-    Serial.print("Current CSFAN: ");
-    Serial.print(currentCold);
-    Serial.println(" A");
-
-    Serial.print("Current HSFAN: ");
-    Serial.print(currentHot);
-    Serial.println(" A");
-
-    Serial.print("Voltage: ");
-    Serial.print(inputVoltage);
-    Serial.println(" V");
+    Serial.printf("Current CSFAN: %.3f A\n", currentCold);
+    Serial.printf("Current HSFAN: %.3f A\n", currentHot);
+    Serial.printf("Voltage: %.2f V\n", inputVoltage);
   }
 }
+
+void runMulticolor() {
+  unsigned long now = millis();
+  if (now - prevNeoMillis < neoInterval) return;
+  prevNeoMillis = now;
+
+  if (neoOnPhase) {
+    int r = colors[neoColorIndex][0];
+    int g = colors[neoColorIndex][1];
+    int b = colors[neoColorIndex][2];
+    led.setPixelColor(0, led.Color(r, g, b));
+  } else {
+    led.clear();
+    neoColorIndex++;
+    if (neoColorIndex >= 6) neoColorIndex = 0;
+  }
+
+  led.show();
+  neoOnPhase = !neoOnPhase;
+}
+
+void runShiftPattern() {
+  unsigned long now = millis();
+  if (now - prevShiftMillis < shiftInterval) return;
+  prevShiftMillis = now;
+
+  if (shiftPhase == 0) 
+  {  
+    writeShift(shiftIndex + 1);
+    shiftIndex++;
+    if (shiftIndex >= 8) shiftPhase = 1;
+  }
+  else if (shiftPhase == 1) 
+  { 
+    writeShift(8);
+    shiftPhase = 2;
+  }
+  else if (shiftPhase == 2) 
+  { 
+    writeShift(shiftIndex - 1);
+    shiftIndex--;
+    if (shiftIndex <= 0) shiftPhase = 0;
+  }
+}
+
+void writeShift(int count) {
+  byte value = 0;
+  for (int i = 0; i < count; i++) value |= (1 << i);
+
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, value);
+  latchUpdate();
+}
+
+void latchUpdate() {
+  digitalWrite(SR_RCLK, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(SR_RCLK, LOW);
+}
+
+void allOff() {
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, 0x00);
+  latchUpdate();
+
+  led.clear();
+  led.show();
 }
