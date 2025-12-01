@@ -1,10 +1,12 @@
-#include <Adafruit_NeoPixel.h>
+/*#include <Adafruit_NeoPixel.h>
+#include <Arduino.h>
+#include <esp_adc_cal.h>
 
 #define LED_PIN 16
-#define BUTTON_PIN 10
+#define BUTTON_PIN 10         
 #define NUM_LEDS 1
 #define LED1_PIN 48
-#define LID_OPEN_DETECT 46
+#define LID_OPEN_DETECT 46    
 #define HOTFAN_PIN 7
 #define CSFAN_PIN 21
 
@@ -23,10 +25,10 @@
 #define SR_SRCLK 44
 #define SR_RCLK  43
 
-#define VREF 3.3
+#define VREF 3300
 #define ADC_MAX 4095
 #define R_FIXED 10000
-#define BETA 4250
+#define BETA 3434
 #define R0 10000
 #define T0 298.15
 #define GAIN 100.0
@@ -34,11 +36,18 @@
 #define CSSHUNT_RESISTOR 0.3
 #define HSSHUNT_RESISTOR 0.05
 
+#define ADC_ATTEN                   ADC_ATTEN_DB_6
+
+// ADC calibration struct
+static esp_adc_cal_characteristics_t adc_chars;
+
 Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
+volatile bool buttonPressed = false;
+
 int ledState = 0;
-int lastButtonState = HIGH;
 int lastLidState = HIGH;
+int lastButtonState = HIGH;
 
 unsigned long prevNeoMillis = 0;
 unsigned long prevShiftMillis = 0;
@@ -60,15 +69,18 @@ int colors[6][3] = {
 int shiftPhase = 0;
 int shiftIndex = 0;
 
+// --- ADC calibration-related functions ---
 
 float readVoltage(int pin) {
-  int val = analogRead(pin);
-  return (val * VREF) / ADC_MAX;
+  // Use esp_adc_cal to get a calibrated value (in mV)
+  uint32_t raw = analogRead(pin);
+  uint32_t voltage = esp_adc_cal_raw_to_voltage(raw, &adc_chars); // returns mV
+  return voltage / 1000.0; // return in V
 }
 
 float voltageToResistance(float voltage) {
   if (voltage <= 0) return NAN;
-  return R_FIXED * (VREF / voltage - 1.0);
+  return R_FIXED * (VREF / voltage- 1.0);
 }
 
 float resistanceToTempC(float resistance) {
@@ -76,11 +88,41 @@ float resistanceToTempC(float resistance) {
   return tempK - 273.15;
 }
 
+void IRAM_ATTR buttonISR() {
+  buttonPressed = true;
+}
+
 void setup() {
   Serial.begin(115200);
   analogReadResolution(12);
+  analogSetAttenuation(static_cast<adc_attenuation_t>(ADC_ATTEN));
+
+  // --- ADC calibration initialization ---
+  esp_adc_cal_value_t efuse_config = esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH_BIT_12, VREF, &adc_chars);
+  switch (efuse_config) {
+    case ESP_ADC_CAL_VAL_EFUSE_VREF:
+      Serial.println("Characterized using eFuse Vref");
+      break;
+    case ESP_ADC_CAL_VAL_EFUSE_TP:
+      Serial.println("Characterized using Two Point Value stored in eFuse");
+      break;
+    case ESP_ADC_CAL_VAL_DEFAULT_VREF:
+      Serial.println("Characterized using Default Vref (no eFuse)");
+      break;
+    case ESP_ADC_CAL_VAL_EFUSE_TP_FIT:
+      Serial.println(" Characterization based on Two Point values and fitting curve coefficients stored in eFuse");
+      break;
+    default:
+      Serial.println(F("ALERT, ADC calibration failed"));
+  }
+
+  Serial.printf("Gradient of ADC-Voltage curve: %d\n", adc_chars.coeff_a);
+  Serial.printf("Offset of ADC-Voltage curve: %d\n", adc_chars.coeff_b);
+  Serial.printf("Vref used by lookup table %d mV\n", adc_chars.vref);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(BUTTON_PIN, buttonISR, FALLING);
+
   pinMode(LID_OPEN_DETECT, INPUT_PULLUP);
   pinMode(LED1_PIN, OUTPUT);
   pinMode(HOTFAN_PIN, OUTPUT);
@@ -96,36 +138,34 @@ void setup() {
 
 void loop() {
 
-  int currentButton = digitalRead(BUTTON_PIN);
+  int offset=0.17;
+
+  if (buttonPressed) {
+    buttonPressed = false;
+    ledState = !ledState;
+  }
+
   int currentLidState = digitalRead(LID_OPEN_DETECT);
 
   if (currentLidState != lastLidState) {
-
-    if (currentLidState == LOW) 
-    {
-      Serial.println("LID CLOSED");
-    } else 
-    { 
+    if (currentLidState == HIGH) {
       Serial.println("LID OPEN");
 
-      digitalWrite(LED1_PIN, LOW);
       digitalWrite(HOTFAN_PIN, LOW);
       digitalWrite(CSFAN_PIN, LOW);
+      digitalWrite(LED1_PIN, LOW);
 
       led.clear();
       led.show();
       writeShift(0);
+    } else {
+      Serial.println("LID CLOSED");
     }
-
-    lastLidState = currentLidState;
   }
 
-  if (lastButtonState == HIGH && currentButton == LOW) {
-    ledState = !ledState;
-  }
-  lastButtonState = currentButton;
+  lastLidState = currentLidState;
 
-  if (currentLidState == LOW && ledState == 1) {
+  if (ledState == 1 && currentLidState == LOW) {
     digitalWrite(HOTFAN_PIN, HIGH);
     digitalWrite(CSFAN_PIN, HIGH);
     digitalWrite(LED1_PIN, HIGH);
@@ -148,19 +188,23 @@ void loop() {
   if (now - prevMillis >= 1000) {
     prevMillis = now;
 
+    // --- Temperature Reading with calibrated ADC ---
     float tA = resistanceToTempC(voltageToResistance(readVoltage(AMBIENT_PIN)));
     float tC = resistanceToTempC(voltageToResistance(readVoltage(COLDSINK_PIN)));
     float tH = resistanceToTempC(voltageToResistance(readVoltage(HEATSINK_PIN)));
     float tF = resistanceToTempC(voltageToResistance(readVoltage(FLASKTOP_PIN)));
 
     int adcCold = analogRead(CSFAN_CURR_PIN);
-    float currentCold = ((adcCold * VREF) / ADC_MAX) / (GAIN * CSSHUNT_RESISTOR);
+    float voltageCSFan = esp_adc_cal_raw_to_voltage(adcCold, &adc_chars) / 1000.0; // V
+    float currentCold = voltageCSFan / (GAIN * CSSHUNT_RESISTOR);
 
     int adcHot = analogRead(HSFAN_CURR_PIN);
-    float currentHot = ((adcHot * VREF) / ADC_MAX) / (GAIN * HSSHUNT_RESISTOR);
+    float voltageHSFan = esp_adc_cal_raw_to_voltage(adcHot, &adc_chars) / 1000.0; // V
+    float currentHot = voltageHSFan / (GAIN * HSSHUNT_RESISTOR);
 
     int adcValue = analogRead(VOLTAGE_PIN);
-    float inputVoltage = (((float)adcValue / ADC_MAX) * VREF) * DIVIDER_RATIO;
+    float inputVoltage = (esp_adc_cal_raw_to_voltage(adcValue, &adc_chars) / 1000.0) * DIVIDER_RATIO;
+    inputVoltage += offset;
 
     Serial.printf("Ambient: %.2f°C\n", tA);
     Serial.printf("Cold Sink: %.2f°C\n", tC);
@@ -198,19 +242,16 @@ void runShiftPattern() {
   if (now - prevShiftMillis < shiftInterval) return;
   prevShiftMillis = now;
 
-  if (shiftPhase == 0) 
-  {  
+  if (shiftPhase == 0) {
     writeShift(shiftIndex + 1);
     shiftIndex++;
     if (shiftIndex >= 8) shiftPhase = 1;
   }
-  else if (shiftPhase == 1) 
-  { 
+  else if (shiftPhase == 1) {
     writeShift(8);
     shiftPhase = 2;
   }
-  else if (shiftPhase == 2) 
-  { 
+  else if (shiftPhase == 2) {
     writeShift(shiftIndex - 1);
     shiftIndex--;
     if (shiftIndex <= 0) shiftPhase = 0;
@@ -237,4 +278,314 @@ void allOff() {
 
   led.clear();
   led.show();
+}*/
+
+#include <Arduino.h>
+#include <esp_adc_cal.h>
+#include <Adafruit_NeoPixel.h>
+#include <math.h>
+
+// ====== Thermistor and ADC parameters ======
+#define ADC_ATTEN ADC_ATTEN_DB_6
+#define VREF 1100  // mV for esp_adc calibration
+static esp_adc_cal_characteristics_t adc_chars;
+
+const float SERIES_RESISTOR = 10000.0;     // 10k pull-up or pull-down resistor
+const float NOMINAL_RESISTANCE = 10000.0;  // at 25°C
+const float NOMINAL_TEMPERATURE = 25.0;    // 25°C (in Celsius)
+const float BETA = 3434.0;                 // Beta value
+const float VCC = 3300.0;                  // mV power supply for voltage divider
+const int samples = 50;                    // Averaging to reduce noise
+const int offset = 25;  // mV calibration offset, tweak as needed
+
+#define AMBIENT_PIN 8
+#define COLDSINK_PIN 3
+#define HEATSINK_PIN 9
+#define FLASKTOP_PIN 11
+
+// ====== Control, LED, and Current Sense ======
+#define LED_PIN 16
+#define BUTTON_PIN 10         
+#define NUM_LEDS 1
+#define LED1_PIN 48
+#define LID_OPEN_DETECT 46    
+#define HOTFAN_PIN 7
+#define CSFAN_PIN 21
+
+#define CSFAN_CURR_PIN 14
+#define HSFAN_CURR_PIN 15
+
+#define VOLTAGE_PIN 4
+#define DIVIDER_RATIO 11
+
+#define SR_SER   13
+#define SR_SRCLK 44
+#define SR_RCLK  43
+
+#define ADC_MAX 4095
+#define GAIN 100.0
+
+#define CSSHUNT_RESISTOR 0.3
+#define HSSHUNT_RESISTOR 0.05
+
+Adafruit_NeoPixel led(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+volatile bool buttonPressed = false;
+
+int ledState = 0;
+int lastLidState = HIGH;
+int lastButtonState = HIGH;
+
+unsigned long prevNeoMillis = 0;
+unsigned long prevShiftMillis = 0;
+const int neoInterval = 300;
+const int shiftInterval = 200;
+
+int neoColorIndex = 0;
+bool neoOnPhase = true;
+
+int colors[6][3] = {
+  {255, 0, 0},     // red
+  {0, 255, 0},     // green
+  {0, 0, 255},     // blue
+  {255, 255, 0},   // yellow
+  {0, 255, 255},   // cyan
+  {255, 0, 255}
+};
+
+int shiftPhase = 0;
+int shiftIndex = 0;
+
+// --- Modern averaged calibrated thermistor readout ---
+float readThermistor(int pin) {
+  uint32_t raw = 0;
+  float voltage = 0.0;
+  for (int i = 0; i < samples; i++) {
+    raw += analogRead(pin);
+    voltage += analogReadMilliVolts(pin);
+    delay(1);
+  }
+  raw /= samples;
+  voltage /= samples;
+  voltage += offset;
+
+  // Sensor disconnected check: tune these if needed
+  const int threshold_low = 50;
+  const int threshold_high = 4050;
+  if (raw < threshold_low || raw > threshold_high) {
+    return NAN; // Not-a-Number: sensor not plugged in
+  }
+
+  // Divider: VCC---[SERIES_RESISTOR]---+---[Thermistor]---GND
+  //                                    |
+  //                                  (ADC)
+  float resistance = (voltage * SERIES_RESISTOR) / (VCC - voltage);
+
+  float steinhart = resistance / NOMINAL_RESISTANCE;
+  steinhart = log(steinhart);
+  steinhart /= BETA;
+  steinhart += 1.0 / (NOMINAL_TEMPERATURE + 273.15);
+  steinhart = 1.0 / steinhart;
+  steinhart -= 273.15;
+  return steinhart;
 }
+
+void printTemperature(float temp, const char* name) {
+  if (isnan(temp)) {
+    Serial.printf("%s -> Thermistor disconnected!\n", name);
+  } else {
+    Serial.printf("%s -> Temp: %.2f °C\n", name, temp);
+  }
+}
+
+void IRAM_ATTR buttonISR() {
+  buttonPressed = true;
+}
+
+void setup() {
+  Serial.begin(115200);
+  analogReadResolution(12);
+  analogSetAttenuation(static_cast<adc_attenuation_t>(ADC_ATTEN));
+  led.begin();
+  led.show();
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  attachInterrupt(BUTTON_PIN, buttonISR, FALLING);
+
+  pinMode(LID_OPEN_DETECT, INPUT_PULLUP);
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(HOTFAN_PIN, OUTPUT);
+  pinMode(CSFAN_PIN, OUTPUT);
+
+  pinMode(SR_SER, OUTPUT);
+  pinMode(SR_SRCLK, OUTPUT);
+  pinMode(SR_RCLK, OUTPUT);
+
+  // ADC calibration
+  esp_adc_cal_value_t efuse_config = esp_adc_cal_characterize(
+    ADC_UNIT_1, ADC_ATTEN, ADC_WIDTH_BIT_12, VREF, &adc_chars);
+
+  switch (efuse_config) {
+    case ESP_ADC_CAL_VAL_EFUSE_VREF:
+      Serial.println("Characterized using eFuse Vref");
+      break;
+    case ESP_ADC_CAL_VAL_EFUSE_TP:
+      Serial.println("Characterized using Two Point Value stored in eFuse");
+      break;
+    case ESP_ADC_CAL_VAL_DEFAULT_VREF:
+      Serial.println("Characterized using Default Vref (no eFuse)");
+      break;
+    case ESP_ADC_CAL_VAL_EFUSE_TP_FIT:
+      Serial.println("Characterized using Two Point values and fitting curve coefficients stored in eFuse");
+      break;
+    default:
+      Serial.println(F("ALERT, ADC calibration failed"));
+  }
+  Serial.printf("Gradient of ADC-Voltage curve: %d\n", adc_chars.coeff_a);
+  Serial.printf("Offset of ADC-Voltage curve: %d\n", adc_chars.coeff_b);
+  Serial.printf("Vref used by lookup table %d mV\n", adc_chars.vref);
+}
+
+void loop() {
+
+  if (buttonPressed) {
+    buttonPressed = false;
+    ledState = !ledState;
+  }
+
+  int currentLidState = digitalRead(LID_OPEN_DETECT);
+
+  if (currentLidState != lastLidState) {
+    if (currentLidState == HIGH) {
+      Serial.println("LID OPEN");
+
+      digitalWrite(HOTFAN_PIN, LOW);
+      digitalWrite(CSFAN_PIN, LOW);
+      digitalWrite(LED1_PIN, LOW);
+
+      led.clear();
+      led.show();
+      writeShift(0);
+    } else {
+      Serial.println("LID CLOSED");
+    }
+  }
+  lastLidState = currentLidState;
+
+  if (ledState == 1 && currentLidState == LOW) {
+    digitalWrite(HOTFAN_PIN, HIGH);
+    digitalWrite(CSFAN_PIN, HIGH);
+    digitalWrite(LED1_PIN, HIGH);
+  } else {
+    digitalWrite(HOTFAN_PIN, LOW);
+    digitalWrite(CSFAN_PIN, LOW);
+    digitalWrite(LED1_PIN, LOW);
+  }
+
+  if (ledState == 1 && currentLidState == LOW) {
+    runMulticolor();
+    runShiftPattern();
+  } else {
+    allOff();
+  }
+
+  static unsigned long prevMillis = 0;
+  unsigned long now = millis();
+
+  if (now - prevMillis >= 1000) {
+    prevMillis = now;
+
+    // ------ Temperature readings ------
+    float tA = readThermistor(AMBIENT_PIN);
+    float tC = readThermistor(COLDSINK_PIN);
+    float tH = readThermistor(HEATSINK_PIN);
+    float tF = readThermistor(FLASKTOP_PIN);
+
+    printTemperature(tA, "Ambient");
+    printTemperature(tC, "Cold Sink");
+    printTemperature(tH, "Heat Sink");
+    printTemperature(tF, "Flask Top");
+
+    // ------ Fan current and input voltage ------
+    int adcCold = analogRead(CSFAN_CURR_PIN);
+    float voltageCSFan= adcCold*(3.3/4095);
+    //float voltageCSFan = esp_adc_cal_raw_to_voltage(adcCold, &adc_chars) / 1000.0; // V
+    float currentCold = voltageCSFan / (GAIN * CSSHUNT_RESISTOR);
+
+    int adcHot = analogRead(HSFAN_CURR_PIN);
+     float voltageHSFan= adcHot*(3.3/4095);
+    //float voltageHSFan = esp_adc_cal_raw_to_voltage(adcHot, &adc_chars) / 1000.0; // V
+    float currentHot = voltageHSFan / (GAIN * HSSHUNT_RESISTOR);
+
+    int adcValue = analogRead(VOLTAGE_PIN);
+    float inputVoltage = (esp_adc_cal_raw_to_voltage(adcValue, &adc_chars) / 1000.0) * DIVIDER_RATIO;
+
+    Serial.printf("Current CSFAN: %.3f A\n", currentCold);
+    Serial.printf("Current HSFAN: %.3f A\n", currentHot);
+    Serial.printf("Voltage: %.2f V\n", inputVoltage);
+  }
+}
+
+void runMulticolor() {
+  unsigned long now = millis();
+  if (now - prevNeoMillis < neoInterval) return;
+  prevNeoMillis = now;
+
+  if (neoOnPhase) {
+    int r = colors[neoColorIndex][0];
+    int g = colors[neoColorIndex][1];
+    int b = colors[neoColorIndex][2];
+    led.setPixelColor(0, led.Color(r, g, b));
+  } else {
+    led.clear();
+    neoColorIndex++;
+    if (neoColorIndex >= 6) neoColorIndex = 0;
+  }
+
+  led.show();
+  neoOnPhase = !neoOnPhase;
+}
+
+void runShiftPattern() {
+  unsigned long now = millis();
+  if (now - prevShiftMillis < shiftInterval) return;
+  prevShiftMillis = now;
+
+  if (shiftPhase == 0) {
+    writeShift(shiftIndex + 1);
+    shiftIndex++;
+    if (shiftIndex >= 8) shiftPhase = 1;
+  }
+  else if (shiftPhase == 1) {
+    writeShift(8);
+    shiftPhase = 2;
+  }
+  else if (shiftPhase == 2) {
+    writeShift(shiftIndex - 1);
+    shiftIndex--;
+    if (shiftIndex <= 0) shiftPhase = 0;
+  }
+}
+
+void writeShift(int count) {
+  byte value = 0;
+  for (int i = 0; i < count; i++) value |= (1 << i);
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, value);
+  latchUpdate();
+}
+
+void latchUpdate() {
+  digitalWrite(SR_RCLK, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(SR_RCLK, LOW);
+}
+
+void allOff() {
+  shiftOut(SR_SER, SR_SRCLK, MSBFIRST, 0x00);
+  latchUpdate();
+  led.clear();
+  led.show();
+}
+
+
+
