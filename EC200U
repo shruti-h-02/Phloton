@@ -1,0 +1,103 @@
+#include <HardwareSerial.h>
+
+HardwareSerial ec200uSerial(1);
+
+#define PWRKEY_PIN 35
+
+void sendAT(String cmd) {
+  Serial.println("\n>>> " + cmd);
+  ec200uSerial.println(cmd);
+
+  delay(300);
+
+  unsigned long t = millis();
+  while (millis() - t < 2000) {
+    while (ec200uSerial.available()) {
+      Serial.write(ec200uSerial.read());
+    }
+  }
+}
+
+void powerOnEC200U() {
+  digitalWrite(PWRKEY_PIN, HIGH);
+  delay(2000);               
+  digitalWrite(PWRKEY_PIN, LOW);
+  Serial.println("Power ON sequence done. Waiting for module to boot...");  
+  //delay(3000);         
+}
+
+void powerOffEC200U() {
+  Serial.println("\n>>> Powering OFF EC200U...");
+  digitalWrite(PWRKEY_PIN, HIGH);
+  delay(5000);             
+  digitalWrite(PWRKEY_PIN, LOW);
+  Serial.println("Power OFF sequence done.");
+   
+   
+  delay(8000);             
+}
+
+void printMenu() {
+ Serial.println("\n====== EC200U AT TEST MENU ======");
+  Serial.println("0. Power ON EC200U");
+  Serial.println("16. Power OFF EC200U");
+  Serial.println("1. Test Module (AT)");
+  Serial.println("2. Check SIM Status (AT+CPIN?)");
+  Serial.println("3. Get IMSI (AT+CIMI)");
+  Serial.println("4. Signal Strength (AT+CSQ)");
+  Serial.println("5. Network Reg (AT+CREG?)");
+  Serial.println("6. LTE Reg (AT+CEREG?)");
+  Serial.println("7. Operator Info (AT+COPS?)");
+  Serial.println("8. LTE Info (AT+QNWINFO)");
+  Serial.println("9. Serving Cell Info (AT+QENG=\"servingcell\")");
+  Serial.println("10. Attach Status (AT+CGATT?)");
+  Serial.println("11. APN Check (AT+CGDCONT?)");
+  Serial.println("12. PDP Activate (AT+QIACT?)");
+  Serial.println("13. Ping Google (AT+QPING=1,\"8.8.8.8\")");
+  Serial.println("14. IMEI (AT+GSN)");
+  Serial.println("15. FW Version (AT+GMR)");
+  Serial.println("Enter option number:");
+}
+
+void setup() {
+  Serial.begin(115200);
+  ec200uSerial.begin(115200, SERIAL_8N1, 18, 17);
+
+  pinMode(PWRKEY_PIN, OUTPUT);
+  digitalWrite(PWRKEY_PIN, LOW);  
+  //Serial.println("\nEC200U Debug Tool Ready!");
+  printMenu();
+}
+
+void loop() {
+  if (Serial.available()) {
+    int option = Serial.parseInt();
+
+    switch (option) {
+      case 0: powerOnEC200U(); break;
+      case 1: sendAT("AT"); break;
+      case 2: sendAT("AT+CPIN?"); break;
+      case 3: sendAT("AT+CIMI"); break;
+      case 4: sendAT("AT+CSQ"); break;
+      case 5: sendAT("AT+CREG?"); break;
+      case 6: sendAT("AT+CEREG?"); break;
+      case 7: sendAT("AT+COPS?"); break;
+      case 8: sendAT("AT+QNWINFO"); break;
+      case 9: sendAT("AT+QENG=\"servingcell\""); break;
+      case 10: sendAT("AT+CGATT?"); break;
+      case 11: sendAT("AT+CGDCONT?"); break;
+      case 12: sendAT("AT+QIACT?"); break;
+      case 13: sendAT("AT+QPING=1,\"8.8.8.8\""); break;
+      case 14: sendAT("AT+GSN"); break;
+      case 15: sendAT("AT+GMR"); break;
+      case 16: powerOffEC200U(); break;
+      default: Serial.println("Invalid option!"); break;
+    }
+    printMenu();
+  }
+
+  // If module sends URC messages automatically
+  if (ec200uSerial.available()) {
+    Serial.write(ec200uSerial.read());
+  }
+}
