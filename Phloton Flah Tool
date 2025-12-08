@@ -1,0 +1,568 @@
+# phloton_auto_flasher.py
+# Requires: pip install pyqt5 pyserial esptool
+import sys
+import os
+import time
+import subprocess
+import glob
+import json
+from pathlib import Path
+
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QPushButton, QLabel,
+    QLineEdit, QFileDialog, QTextEdit, QVBoxLayout, QHBoxLayout,
+    QComboBox, QProgressBar, QMessageBox
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+import serial
+import serial.tools.list_ports
+
+CONFIG_FILE = Path.home() / ".phloton_config.json"
+
+BOOTLOADER_OFF = "0x0"
+PARTITIONS_OFF = "0x8000"
+APP_OFF = "0x10000"
+
+BOOTLOOP_PATTERNS = [
+    "SHA-256 comparison failed",
+    "TGWDT_SYS_RST",
+    "SPI_FAST_FLASH_BOOT",
+    "Attempting to boot anyway",
+    "ets_",
+    "rst:0x7",
+    "boot:0x38"
+]
+
+# ------------------ Helpers: locate Arduino cores ------------------
+def default_arduino15_candidates():
+    candidates = []
+    if sys.platform.startswith("win"):
+        candidates.append(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Arduino15"))
+        candidates.append(os.path.join(os.environ.get("APPDATA", ""), "Arduino15"))
+    elif sys.platform.startswith("darwin"):
+        candidates.append(os.path.join(Path.home(), "Library", "Arduino15"))
+    else:
+        # linux
+        candidates.append(os.path.join(Path.home(), ".arduino15"))
+        candidates.append(os.path.join(Path.home(), ".arduino", "15"))
+    # also check environment var ARDUINO15
+    env = os.environ.get("ARDUINO15")
+    if env:
+        candidates.insert(0, env)
+    return [p for p in candidates if p]
+
+def find_esp32_core_paths(arduino15_paths=None):
+    if arduino15_paths is None:
+        arduino15_paths = default_arduino15_candidates()
+    found = []
+    for base in arduino15_paths:
+        esp_base = os.path.join(base, "packages", "esp32", "hardware", "esp32")
+        if os.path.isdir(esp_base):
+            for ver in sorted(os.listdir(esp_base), reverse=True):
+                path = os.path.join(esp_base, ver)
+                if os.path.isdir(path):
+                    found.append((path, ver))
+    return found
+
+def pick_bootloader_and_partitions(core_path, board_name_hint="esp32s3"):
+    """
+    Heuristic: find bootloader .bin and partitions .bin for a core_path.
+    Returns (bootloader_path, partitions_path) or (None, None)
+    """
+    # 1) Look for bootloader folder
+    bootloader_dir = os.path.join(core_path, "tools", "sdk", "bin")
+    alt_bootloader_dir = os.path.join(core_path, "bootloader")
+    candidates = []
+    for d in (alt_bootloader_dir, bootloader_dir):
+        if os.path.isdir(d):
+            candidates += glob.glob(os.path.join(d, "*.bin"))
+    # fallback: look anywhere in core_path for bootloader*.bin
+    if not candidates:
+        candidates += glob.glob(os.path.join(core_path, "**", "bootloader*.bin"), recursive=True)
+    # pick a file that mentions s3 or esp32s3 if possible
+    bootloader = None
+    for c in candidates:
+        n = os.path.basename(c).lower()
+        if "s3" in n or "esp32s3" in n:
+            bootloader = c
+            break
+    if not bootloader and candidates:
+        bootloader = candidates[0]
+
+    # partitions: look in tools/partitions or tools/partitions/
+    partitions_dir = os.path.join(core_path, "tools", "partitions")
+    parts_list = []
+    if os.path.isdir(partitions_dir):
+        parts_list = glob.glob(os.path.join(partitions_dir, "*.bin"))
+    # fallback: search for partitions_*.bin
+    if not parts_list:
+        parts_list = glob.glob(os.path.join(core_path, "**", "*partition*.bin"), recursive=True)
+    partitions = None
+    for p in parts_list:
+        n = os.path.basename(p).lower()
+        if "default" in n or "singleapp" in n or "partition" in n:
+            partitions = p
+            break
+    if not partitions and parts_list:
+        partitions = parts_list[0]
+
+    return bootloader, partitions
+
+# ------------------ Flash thread ------------------
+class FlashThread(QThread):
+    log = pyqtSignal(str)
+    finished = pyqtSignal(bool)
+
+    def __init__(self, port, bootloader, partitions, app_bin, chip="esp32s3", baud="115200"):
+        super().__init__()
+        self.port = port
+        self.bootloader = bootloader
+        self.partitions = partitions
+        self.app_bin = app_bin
+        self.chip = chip
+        self.baud = baud
+
+    def run(self):
+        # Build esptool command
+        cmd = [
+            sys.executable, "-m", "esptool",
+            "--chip", self.chip,
+            "--port", self.port,
+            "--baud", str(self.baud),
+            "--before", "default_reset",
+            "--after", "hard_reset",
+            "write_flash", "-z",
+            BOOTLOADER_OFF, self.bootloader,
+            PARTITIONS_OFF, self.partitions,
+            APP_OFF, self.app_bin
+        ]
+        try:
+            self.log.emit("Running: " + " ".join(cmd))
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as e:
+            self.log.emit(f"[ERROR] Failed to launch esptool: {e}")
+            self.finished.emit(False)
+            return
+
+        for line in proc.stdout:
+            self.log.emit(line.rstrip())
+        proc.wait()
+        ok = (proc.returncode == 0)
+        self.finished.emit(ok)
+
+# ------------------ Serial + recovery monitor thread ------------------
+class SerialMonitorThread(QThread):
+    line = pyqtSignal(str)
+    bootloop_detected = pyqtSignal()
+
+    def __init__(self, port, baud=115200):
+        super().__init__()
+        self.port = port
+        self.baud = baud
+        self.running = True
+        self.ser = None
+
+    def run(self):
+        try:
+            self.ser = serial.Serial(self.port, self.baud, timeout=1, write_timeout=1)
+        except Exception as e:
+            self.line.emit(f"[Serial Error] {e}")
+            return
+
+        self.line.emit(f"[Serial] Opened {self.port} @ {self.baud}")
+        buffer = ""
+        while self.running:
+            try:
+                if self.ser.in_waiting:
+                    raw = self.ser.readline()
+                    try:
+                        s = raw.decode(errors="ignore").rstrip()
+                    except:
+                        s = str(raw)
+                    if s:
+                        self.line.emit(s)
+                        # detect bootloop patterns
+                        low = s.lower()
+                        for p in BOOTLOOP_PATTERNS:
+                            if p.lower() in low:
+                                self.line.emit("[Monitor] Boot-loop indicator found: " + p)
+                                self.bootloop_detected.emit()
+                                # allow some time, stop reading while recovery proceeds
+                                time.sleep(0.5)
+                                break
+                else:
+                    time.sleep(0.05)
+            except Exception as e:
+                self.line.emit(f"[Serial Error] {e}")
+                break
+
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.close()
+            except:
+                pass
+        self.line.emit("[Serial] Monitor stopped")
+
+    def stop(self):
+        self.running = False
+
+    def toggle_bootloader_pulse(self):
+        # Use RTS/DTR toggling to reset into bootloader
+        if not self.ser:
+            try:
+                self.ser = serial.Serial(self.port, self.baud, timeout=1)
+            except Exception as e:
+                self.line.emit(f"[Serial Error] Cannot open for toggle: {e}")
+                return False
+        try:
+            # Typical sequence: RTS low + DTR high -> EN low -> boot
+            # We'll toggle DTR/RTS in a way that works for many boards
+            self.ser.setDTR(False)
+            self.ser.setRTS(True)
+            time.sleep(0.05)
+            self.ser.setDTR(True)
+            self.ser.setRTS(False)
+            time.sleep(0.05)
+            return True
+        except Exception as e:
+            self.line.emit(f"[Serial Error] Toggle failed: {e}")
+            return False
+
+# ------------------ Main GUI ------------------
+class PhlotonFlasher(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Phloton Automated Flash Tool")
+        self.resize(980, 720)
+
+        # UI elements
+        self.portLabel = QLabel("Port:")
+        self.portCombo = QComboBox()
+        self.refresh_ports_btn = QPushButton("Refresh Ports")
+        self.refresh_ports_btn.clicked.connect(self.refresh_ports)
+
+        p_layout = QHBoxLayout()
+        p_layout.addWidget(self.portCombo)
+        p_layout.addWidget(self.refresh_ports_btn)
+
+        self.boardLabel = QLabel("Board / Chip:")
+        self.boardCombo = QComboBox()
+        self.boardCombo.addItems(["esp32s3", "esp32", "esp32c3", "esp32s2"])
+        self.boardCombo.setCurrentText("esp32s3")
+
+        self.binLabel = QLabel("Select firmware .bin (app only):")
+        self.binInput = QLineEdit()
+        self.browseBtn = QPushButton("Browse")
+        self.browseBtn.clicked.connect(self.browse_bin)
+
+        f_layout = QHBoxLayout()
+        f_layout.addWidget(self.binInput)
+        f_layout.addWidget(self.browseBtn)
+
+        self.autoconfigBtn = QPushButton("Auto-locate Arduino cores")
+        self.autoconfigBtn.clicked.connect(self.autoconfig)
+
+        self.flashBtn = QPushButton("Flash (boot+parts+app)")
+        self.flashBtn.clicked.connect(self.flash_action)
+        self.flashBtn.setEnabled(True)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+
+        self.statusLabel = QLabel("Status: Ready")
+        self.progress = QProgressBar()
+        self.progress.setVisible(False)
+
+        # sensor labels
+        self.lblAmbient = QLabel("Ambient: -- °C")
+        self.lblCold = QLabel("Cold Sink: -- °C")
+        self.lblHot = QLabel("Heat Sink: -- °C")
+        self.lblFlask = QLabel("Flask Top: -- °C")
+        self.lblCS = QLabel("CSFAN: -- A")
+        self.lblHS = QLabel("HSFAN: -- A")
+        self.lblVolt = QLabel("Voltage: -- V")
+
+        sensors_layout = QVBoxLayout()
+        sensors_layout.addWidget(self.lblAmbient)
+        sensors_layout.addWidget(self.lblCold)
+        sensors_layout.addWidget(self.lblHot)
+        sensors_layout.addWidget(self.lblFlask)
+        sensors_layout.addWidget(self.lblCS)
+        sensors_layout.addWidget(self.lblHS)
+        sensors_layout.addWidget(self.lblVolt)
+
+        top_layout = QHBoxLayout()
+        left_col = QVBoxLayout()
+        left_col.addWidget(self.boardLabel)
+        left_col.addWidget(self.boardCombo)
+        left_col.addWidget(self.binLabel)
+        left_col.addLayout(f_layout)
+        left_col.addWidget(self.autoconfigBtn)
+        left_col.addWidget(self.flashBtn)
+        left_col.addWidget(self.progress)
+        left_col.addWidget(self.statusLabel)
+
+        top_layout.addLayout(left_col)
+        top_layout.addLayout(sensors_layout)
+
+        main = QVBoxLayout()
+        main.addLayout(p_layout)
+        main.addLayout(top_layout)
+        main.addWidget(QLabel("Log:"))
+        main.addWidget(self.log)
+
+        self.setLayout(main)
+
+        # internal
+        self.arduino15_path = None
+        self.core_choice_path = None
+        self.bootloader_bin = None
+        self.partitions_bin = None
+        self.app_bin = None
+
+        self.serial_thread = None
+        self.flash_thread = None
+        self.recovery_attempts = 0
+        self.max_retries = 3
+
+        self.load_config()
+        self.refresh_ports()
+
+    # ---------- config ----------
+    def load_config(self):
+        if CONFIG_FILE.exists():
+            try:
+                cfg = json.load(CONFIG_FILE.open("r"))
+                self.arduino15_path = cfg.get("arduino15_path")
+                if self.arduino15_path and os.path.isdir(self.arduino15_path):
+                    self.log_append(f"[Config] Using saved Arduino15: {self.arduino15_path}")
+            except Exception:
+                pass
+
+    def save_config(self):
+        try:
+            json.dump({"arduino15_path": self.arduino15_path}, CONFIG_FILE.open("w"))
+        except Exception:
+            pass
+
+    # ---------- UI helpers ----------
+    def log_append(self, text):
+        self.log.append(text)
+        # keep autoscroll
+        self.log.moveCursor(self.log.textCursor().End)
+
+    def refresh_ports(self):
+        self.portCombo.clear()
+        ports = serial.tools.list_ports.comports()
+        for p in ports:
+            self.portCombo.addItem(p.device)
+        if self.portCombo.count() == 0:
+            self.portCombo.addItem("No COM Ports Found")
+
+    def browse_bin(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Select App Binary (.bin)", "", "BIN Files (*.bin)")
+        if f:
+            self.binInput.setText(f)
+            self.app_bin = f
+
+    def autoconfig(self):
+        self.log_append("[Auto-config] Searching Arduino15 locations...")
+        candidates = default_arduino15_candidates()
+        found = find_esp32_core_paths(candidates)
+        if not found:
+            # ask user to pick the Arduino15 folder
+            self.log_append("[Auto-config] Could not auto-find. Please select Arduino15 folder manually.")
+            f = QFileDialog.getExistingDirectory(self, "Select Arduino15 folder (contains packages/esp32/...)")
+            if not f:
+                self.log_append("[Auto-config] User cancelled manual selection.")
+                return
+            found = find_esp32_core_paths([f])
+            if not found:
+                QMessageBox.warning(self, "Not found", "No esp32 core under selected folder.")
+                return
+            else:
+                self.arduino15_path = f
+        else:
+            # pick the top match
+            self.core_choice_path, ver = found[0]
+            self.arduino15_path = os.path.dirname(os.path.dirname(os.path.dirname(self.core_choice_path)))
+            self.log_append(f"[Auto-config] Found esp32 core: {self.core_choice_path} (ver {ver})")
+
+        # find bootloader and partitions for selected core
+        if not self.core_choice_path:
+            # if multiple found, ask user to choose (we pick first by default)
+            found = find_esp32_core_paths()
+            if found:
+                self.core_choice_path, ver = found[0]
+
+        boot, parts = pick_bootloader_and_partitions(self.core_choice_path)
+        if boot and parts:
+            self.bootloader_bin = boot
+            self.partitions_bin = parts
+            self.log_append(f"[Auto-config] bootloader: {boot}")
+            self.log_append(f"[Auto-config] partitions: {parts}")
+            self.save_config()
+            QMessageBox.information(self, "Auto-config", "Arduino cores located and bootloader/partitions selected.")
+        else:
+            QMessageBox.warning(self, "Auto-config", "Could not find bootloader or partitions. Please locate Arduino cores manually.")
+            self.log_append("[Auto-config] Failed to determine bootloader/partitions.")
+
+    # ---------- Flash action ----------
+    def flash_action(self):
+        port = self.portCombo.currentText()
+        if "No COM" in port or not port:
+            QMessageBox.warning(self, "Port", "No COM port selected.")
+            return
+        self.app_bin = self.binInput.text().strip()
+        if not self.app_bin or not os.path.isfile(self.app_bin):
+            QMessageBox.warning(self, "Firmware", "Please select an app .bin file.")
+            return
+        # ensure we have bootloader and partitions
+        if not (self.bootloader_bin and self.partitions_bin):
+            # try autoconfig automatically
+            self.autoconfig()
+            if not (self.bootloader_bin and self.partitions_bin):
+                QMessageBox.warning(self, "Files", "Bootloader/partitions not available. Auto-config failed.")
+                return
+
+        self.log_append(f"[Flash] Starting flash sequence on {port} ...")
+        self.progress.setVisible(True)
+        self.statusLabel.setText("Status: Flashing...")
+        self.flash_thread = FlashThread(port, self.bootloader_bin, self.partitions_bin, self.app_bin, chip=self.boardCombo.currentText())
+        self.flash_thread.log.connect(self.handle_flash_log)
+        self.flash_thread.finished.connect(self.handle_flash_done)
+        self.flash_thread.start()
+
+    def handle_flash_log(self, s):
+        self.log_append(s)
+
+    def handle_flash_done(self, ok):
+        self.progress.setVisible(False)
+        if ok:
+            self.log_append("[Flash] Flash succeeded.")
+            self.statusLabel.setText("Status: Flash succeeded. Starting serial monitor...")
+            # start serial monitor
+            self.start_serial_monitor()
+        else:
+            self.log_append("[Flash] Flash failed.")
+            self.statusLabel.setText("Status: Flash failed.")
+
+    # ---------- Serial monitor & recovery ----------
+    def start_serial_monitor(self):
+        port = self.portCombo.currentText()
+        if not port or "No COM" in port:
+            self.log_append("[Serial] No port to open.")
+            return
+        # stop if existing
+        if self.serial_thread:
+            try:
+                self.serial_thread.stop()
+            except:
+                pass
+            self.serial_thread = None
+            time.sleep(0.1)
+        self.serial_thread = SerialMonitorThread(port)
+        self.serial_thread.line.connect(self.handle_serial_line)
+        self.serial_thread.bootloop_detected.connect(self.handle_bootloop_detected)
+        self.serial_thread.start()
+        self.recovery_attempts = 0
+
+    def handle_serial_line(self, s):
+        # update UI and attempt to parse sensors
+        self.log_append(s)
+        try:
+            if "Ambient:" in s:
+                v = s.split(":")[1].replace("°C", "").strip()
+                self.lblAmbient.setText(f"Ambient: {v} °C")
+            if "Cold Sink:" in s:
+                v = s.split(":")[1].replace("°C", "").strip()
+                self.lblCold.setText(f"Cold Sink: {v} °C")
+            if "Heat Sink:" in s:
+                v = s.split(":")[1].replace("°C", "").strip()
+                self.lblHot.setText(f"Heat Sink: {v} °C")
+            if "Flask Top:" in s:
+                v = s.split(":")[1].replace("°C", "").strip()
+                self.lblFlask.setText(f"Flask Top: {v} °C")
+            if "Current CSFAN:" in s:
+                v = s.split(":")[1].replace("A", "").strip()
+                self.lblCS.setText(f"CSFAN: {v} A")
+            if "Current HSFAN:" in s:
+                v = s.split(":")[1].replace("A", "").strip()
+                self.lblHS.setText(f"HSFAN: {v} A")
+            if "Voltage:" in s:
+                v = s.split(":")[1].replace("V", "").strip()
+                self.lblVolt.setText(f"Voltage: {v} V")
+        except Exception:
+            pass
+
+    def handle_bootloop_detected(self):
+        # automatic recovery flow (fully automatic)
+        if self.recovery_attempts >= self.max_retries:
+            self.log_append("[Recovery] Max retries reached. Manual intervention required.")
+            self.statusLabel.setText("Status: Recovery failed.")
+            return
+        self.recovery_attempts += 1
+        attempt_no = self.recovery_attempts
+        self.log_append(f"[Recovery] Boot-loop detected. Attempting recovery {attempt_no} / {self.max_retries} ...")
+        self.statusLabel.setText(f"Status: Recovery attempt {attempt_no} ...")
+        # stop serial monitoring while recovery
+        if self.serial_thread:
+            try:
+                self.serial_thread.stop()
+            except:
+                pass
+            time.sleep(0.2)
+        # try to toggle into bootloader using DTR/RTS
+        ser = None
+        try:
+            ser = serial.Serial(self.portCombo.currentText(), 115200, timeout=0.5)
+            # toggle sequence: this often forces bootloader
+            ser.setDTR(False)
+            ser.setRTS(True)
+            time.sleep(0.05)
+            ser.setDTR(True)
+            ser.setRTS(False)
+            time.sleep(0.1)
+            ser.close()
+            self.log_append("[Recovery] Toggled DTR/RTS to attempt bootloader entry.")
+        except Exception as e:
+            self.log_append(f"[Recovery] Toggle failed: {e}")
+            if ser and ser.is_open:
+                try:
+                    ser.close()
+                except:
+                    pass
+
+        # Re-flash now
+        self.log_append(f"[Recovery] Re-flashing all images (attempt {attempt_no}) ...")
+        self.progress.setVisible(True)
+        self.flash_thread = FlashThread(self.portCombo.currentText(), self.bootloader_bin, self.partitions_bin, self.app_bin, chip=self.boardCombo.currentText())
+        self.flash_thread.log.connect(self.handle_flash_log)
+        # after flash, we will restart serial monitor
+        def done_and_restart(ok):
+            self.progress.setVisible(False)
+            if ok:
+                self.log_append("[Recovery] Re-flash succeeded. Restarting monitor...")
+                time.sleep(0.3)
+                self.start_serial_monitor()
+                self.statusLabel.setText("Status: Recovered and monitoring.")
+            else:
+                self.log_append("[Recovery] Re-flash failed.")
+                if self.recovery_attempts < self.max_retries:
+                    # try again
+                    time.sleep(0.3)
+                    self.handle_bootloop_detected()
+                else:
+                    self.statusLabel.setText("Status: Recovery failed.")
+        self.flash_thread.finished.connect(done_and_restart)
+        self.flash_thread.start()
+
+# ------------------ main ------------------
+def main():
+    app = QApplication(sys.argv)
+    w = PhlotonFlasher()
+    w.show()
+    app.exec_()
+
+if __name__ == "__main__":
+    main()
