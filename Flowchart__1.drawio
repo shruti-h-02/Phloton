@@ -1,0 +1,116 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.0.3 Chrome/140.0.7339.249 Electron/38.7.0 Safari/537.36" version="29.0.3">
+  <diagram name="Flowchart" id="klhIROdnhZyrk3TVx-he">
+    <mxGraphModel dx="1090" dy="825" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-30" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-6" target="DEUNS9UfmT9F8UdYOL8m-7" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-6" value="START" style="ellipse;whiteSpace=wrap;html=1;fontSize=16" parent="1" vertex="1">
+          <mxGeometry x="332" y="30" width="116" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-28" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-7" target="DEUNS9UfmT9F8UdYOL8m-9" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-7" value="setup():- Serial.begin- ADC resolution set- SD SPI Init- SD.begin()- ADC Calibration- Pin Modes Setup- Interrupt Attach- NeoPixel Init" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="212" y="100" width="360" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-8" value="loop() Begins" style="ellipse;whiteSpace=wrap;html=1;fontSize=16" parent="1" vertex="1">
+          <mxGeometry x="323.25" y="230" width="141" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-29" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-9" target="DEUNS9UfmT9F8UdYOL8m-12" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-39" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="180" y="1040" as="targetPoint" />
+            <mxPoint x="290" y="680" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-9" value="Check buttonPressed FlagIf TRUE → Toggle ledState" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="288.5" y="300" width="203" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="xyaIxKPm-cUCy64dvYZJ-3" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="180" y="1030" as="targetPoint" />
+            <mxPoint x="290" y="1030" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-11" value="Create data.csv File" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="291.13" y="1010" width="199.5" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-20" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-12" target="VbLmecapwumDj4RH5Q43-44" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+            <mxPoint x="390" y="500.4263093788063" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-12" value="Read Lid SensorHas state" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="254.5" y="400" width="271" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-24" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-14" target="DEUNS9UfmT9F8UdYOL8m-15" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-14" value="If lid closed AND ledState=1 →Turn ON Fans + LED1" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="265.75" y="780" width="248.5" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-25" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-15" target="DEUNS9UfmT9F8UdYOL8m-11" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-43" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="DEUNS9UfmT9F8UdYOL8m-15" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="580" y="925" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-15" value="If allowed:- runMulticolor()- runShiftPattern()" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14" parent="1" vertex="1">
+          <mxGeometry x="269.5" y="890" width="241" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="DEUNS9UfmT9F8UdYOL8m-33" value="ALL OFF" style="ellipse;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="335.88" y="1100" width="110" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-6" value="YES" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" parent="1" vertex="1">
+          <mxGeometry x="384" y="970" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-9" value="No" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" parent="1" vertex="1">
+          <mxGeometry x="500" y="890" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-15" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="VbLmecapwumDj4RH5Q43-10" target="DEUNS9UfmT9F8UdYOL8m-14" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-19" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="VbLmecapwumDj4RH5Q43-10" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="580" y="1130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-10" value="&lt;span style=&quot;font-size: 14px;&quot;&gt;Is LID Closed?&amp;nbsp;&lt;/span&gt;" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="291" y="640" width="198" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-16" value="YES" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" parent="1" vertex="1">
+          <mxGeometry x="380" y="730" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-17" value="NO" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" parent="1" vertex="1">
+          <mxGeometry x="464.25" y="640" width="60" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;" parent="1" source="VbLmecapwumDj4RH5Q43-44" target="VbLmecapwumDj4RH5Q43-10" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="VbLmecapwumDj4RH5Q43-44" value="&#xa;&lt;span style=&quot;color: rgb(255, 255, 255); font-family: Helvetica; font-size: 14px; font-style: normal; font-variant-ligatures: normal; font-variant-caps: normal; font-weight: 400; letter-spacing: normal; orphans: 2; text-align: center; text-indent: 0px; text-transform: none; widows: 2; word-spacing: 0px; -webkit-text-stroke-width: 0px; white-space: normal; background-color: rgb(27, 29, 30); text-decoration-thickness: initial; text-decoration-style: initial; text-decoration-color: initial; display: inline !important; float: none;&quot;&gt;Is ledState == 1 AND sdInitialized == true?&lt;/span&gt;&#xa;&#xa;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+          <mxGeometry x="302.94" y="520" width="174.12" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="uTvnYQ4fQscDJX5JyaI6-1" value="" style="endArrow=classic;html=1;rounded=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" target="DEUNS9UfmT9F8UdYOL8m-33">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="580" y="1120" as="sourcePoint" />
+            <mxPoint x="622" y="1070" as="targetPoint" />
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="uTvnYQ4fQscDJX5JyaI6-2" value="Text" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" vertex="1" connectable="0" parent="uTvnYQ4fQscDJX5JyaI6-1">
+          <mxGeometry x="0.54" y="1" relative="1" as="geometry">
+            <mxPoint x="1" as="offset" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
